@@ -1,4 +1,5 @@
 ## aws-cost-cli
+
 > CLI tool to perform cost analysis on your AWS account with Slack integration
 
 ![](.github/images/aws-cost.gif)
@@ -13,7 +14,7 @@ npm install -g aws-cost-cli
 
 ## Usage
 
-For the simple usage, just run the command without any options. 
+For the simple usage, just run the command without any options.
 
 ```
 aws-cost
@@ -72,36 +73,43 @@ docker run aws-cost-cli
 ```
 
 ## Detailed Breakdown
+
 > The default usage is to get the cost breakdown by service
 
 ```bash
 aws-cost
 ```
+
 You will get the following output
 
 ![Default Usage](./.github/images/default-demo.gif)
 
 ## Total Costs
+
 > You can also get the summary of the cost without the service breakdown
 
 ```bash
 aws-cost --summary
 ```
+
 You will get the following output
 
 ![Summary Usage](./.github/images/summary-demo.gif)
 
 ## Plain Text
+
 > You can also get the output as plain text
 
 ```bash
 aws-cost --text
 ```
+
 You will get the following output in response
 
 ![Text Usage](./.github/images/text-usage.png)
 
 ## JSON Output
+
 > You can also get the output as JSON
 
 ```bash
@@ -160,6 +168,7 @@ aws-cost --json
   }
 }
 ```
+
 </details>
 
 ## Slack Integration
@@ -191,10 +200,7 @@ Regarding the credentials, you need to have the following permissions in order t
     {
       "Sid": "VisualEditor0",
       "Effect": "Allow",
-      "Action": [
-        "iam:ListAccountAliases",
-        "ce:GetCostAndUsage"
-      ],
+      "Action": ["iam:ListAccountAliases", "ce:GetCostAndUsage"],
       "Resource": "*"
     }
   ]
@@ -204,4 +210,5 @@ Regarding the credentials, you need to have the following permissions in order t
 Also, please note that this tool uses AWS Cost Explorer under the hood which [costs $0.01 per request](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/pricing/).
 
 ## License
+
 MIT &copy; [Kamran Ahmed](https://twitter.com/kamranahmedse)

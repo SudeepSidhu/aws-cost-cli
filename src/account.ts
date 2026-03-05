@@ -1,5 +1,6 @@
 import { IAMClient, ListAccountAliasesCommand } from '@aws-sdk/client-iam';
-import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
+
 import { AWSConfig } from './config';
 import { showSpinner } from './logger';
 

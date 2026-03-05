@@ -1,49 +1,45 @@
-import { TotalCosts } from '../cost';
+import { TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
+import { AccountNameMap } from '../organizations';
 
-/**
- * Formats the costs by service into a string
- *
- * @param costs Cost breakdown for account
- * @returns formatted message
- */
-function formatServiceBreakdown(costs: TotalCosts): string {
-  const serviceCosts = costs.totalsByService;
+function formatServiceBreakdown(costs: TotalCostsWithDrilldown): string {
+  const sortedServices = sortBySpend(costs.totalsByService).filter(
+    (service) => costs.totalsByService.yesterday[service] > 0 || costs.totalsByService.today[service] > 0
+  );
 
-  const sortedServices = Object.keys(serviceCosts.yesterday)
-    .filter((service) => serviceCosts.yesterday[service] > 0)
-    .sort((a, b) => serviceCosts.yesterday[b] - serviceCosts.yesterday[a]);
+  const lines: string[] = [];
+  for (const service of sortedServices) {
+    lines.push(
+      `> ${service}: Yesterday \`$${costs.totalsByService.yesterday[service].toFixed(2)}\` | Today \`$${costs.totalsByService.today[service].toFixed(2)}\``
+    );
 
-  const serviceCostsYesterday = sortedServices.map((service) => {
-    return `> ${service}: \`$${serviceCosts.yesterday[service].toFixed(2)}\``;
-  });
+    if (costs.drilldown[service]) {
+      const sorted = sortBySpend(costs.drilldown[service]);
+      for (const ut of sorted) {
+        const yest = costs.drilldown[service].yesterday[ut];
+        const tod = costs.drilldown[service].today[ut];
+        if (yest > 0 || tod > 0) {
+          lines.push(`>   └ ${ut}: Yesterday \`$${yest.toFixed(2)}\` | Today \`$${tod.toFixed(2)}\``);
+        }
+      }
+    }
+  }
 
-  return serviceCostsYesterday.join('\n');
+  return lines.join('\n');
 }
 
-export async function notifySlack(
-  accountAlias: string,
-  costs: TotalCosts,
-  isSummary: boolean,
-  slackToken: string,
-  slackChannel: string
-) {
-  const channel = slackChannel;
+type SlackBlock = { type: string; text?: { type: string; text: string } };
 
+function buildCostBlocks(label: string, costs: TotalCostsWithDrilldown, isSummary: boolean): SlackBlock[] {
   const totals = costs.totals;
-  const serviceCosts = costs.totalsByService;
 
-  let serviceCostsYesterday = [];
-  Object.keys(serviceCosts.yesterday).forEach((service) => {
-    serviceCosts.yesterday[service].toFixed(2);
-    serviceCostsYesterday.push(`${service}: $${serviceCosts.yesterday[service].toFixed(2)}`);
-  });
+  const summary = `> *${label}*
 
-  const summary = `> *Account: ${accountAlias}*
-
-> *Summary *
-> Total Yesterday: \`$${totals.yesterday.toFixed(2)}\`
-> Total This Month: \`$${totals.thisMonth.toFixed(2)}\`
+> *Summary*
 > Total Last Month: \`$${totals.lastMonth.toFixed(2)}\`
+> Total This Month: \`$${totals.thisMonth.toFixed(2)}\`
+> Total Last 7 Days: \`$${totals.last7Days.toFixed(2)}\`
+> Total Yesterday: \`$${totals.yesterday.toFixed(2)}\`
+> Total Today: \`$${totals.today.toFixed(2)}\`
 `;
 
   const breakdown = `
@@ -51,24 +47,70 @@ export async function notifySlack(
 ${formatServiceBreakdown(costs)}
 `;
 
-  let message = `${summary}`;
+  let message = summary;
   if (!isSummary) {
-    message += `${breakdown}`;
+    message += breakdown;
   }
+
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: message },
+    },
+  ];
+}
+
+export async function notifySlack(
+  accountAlias: string,
+  costs: TotalCostsWithDrilldown,
+  isSummary: boolean,
+  slackToken: string,
+  slackChannel: string,
+  costsByAccount?: Record<string, TotalCostsWithDrilldown>,
+  accountNames?: AccountNameMap
+) {
+  const blocks: SlackBlock[] = [];
+
+  // Org-wide summary
+  blocks.push(...buildCostBlocks(`Account: ${accountAlias}`, costs, isSummary));
+
+  // Account summary table
+  if (costsByAccount && Object.keys(costsByAccount).length > 0) {
+    const sortedAccountIds = Object.keys(costsByAccount).sort((a, b) => {
+      return spendScore(costsByAccount[b].totals) - spendScore(costsByAccount[a].totals);
+    });
+
+    const summaryLines = sortedAccountIds.map((id) => {
+      const name = accountNames?.[id] || id;
+      const t = costsByAccount[id].totals;
+      return `> ${name}: Last Month \`$${t.lastMonth.toFixed(2)}\` | This Month \`$${t.thisMonth.toFixed(2)}\` | Yesterday \`$${t.yesterday.toFixed(2)}\` | Today \`$${t.today.toFixed(2)}\``;
+    });
+
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `> *Account Summary*\n${summaryLines.join('\n')}` },
+    });
+
+    // Per-account breakdowns
+    if (!isSummary) {
+      for (const accountId of sortedAccountIds) {
+        const name = accountNames?.[accountId];
+        const label = name ? `${name} (${accountId})` : accountId;
+        blocks.push({ type: 'divider' });
+        blocks.push(...buildCostBlocks(label, costsByAccount[accountId], isSummary));
+      }
+    }
+  }
+
+  // Slack has a 50-block limit per message
+  const truncatedBlocks = blocks.slice(0, 50);
 
   const response = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'post',
     body: JSON.stringify({
-      channel,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: message,
-          },
-        },
-      ],
+      channel: slackChannel,
+      blocks: truncatedBlocks,
     }),
     headers: {
       'Content-Type': 'application/json; charset=utf-8',

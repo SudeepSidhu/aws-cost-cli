@@ -1,5 +1,6 @@
 import { loadSharedConfigFiles } from '@smithy/shared-ini-file-loader';
 import chalk from 'chalk';
+
 import { printFatalError } from './logger';
 
 export type AWSConfig = {

@@ -1,8 +1,10 @@
-import { createRequire } from 'node:module';
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
+
 import { getAccountAlias } from './account';
 import { getAwsConfigFromOptionsOrFile } from './config';
-import { getTotalCosts } from './cost';
+import { TotalCostsWithDrilldown, filterByPriceFloor, getOrgCosts } from './cost';
+import { AccountNameMap, getAccountNames } from './organizations';
 import { printFancy } from './printers/fancy';
 import { printJson } from './printers/json';
 import { notifySlack } from './printers/slack';
@@ -27,6 +29,8 @@ program
   .option('-j, --json', 'Get the output as JSON')
   .option('-u, --summary', 'Get only the summary without service breakdown')
   .option('-t, --text', 'Get the output as plain text (no colors / tables)')
+  // Filtering
+  .option('-F, --price-floor-cents <number>', 'Only show services exceeding this cost in cents for lastMonth or thisMonth', '500')
   // Slack integration
   .option('-S, --slack-token [token]', 'Token for the slack integration')
   .option('-C, --slack-channel [channel]', 'Channel to which the slack integration should post')
@@ -46,6 +50,8 @@ type OptionsType = {
   text: boolean;
   json: boolean;
   summary: boolean;
+  // Filtering
+  priceFloorCents: string;
   // Slack token
   slackToken: string;
   slackChannel: string;
@@ -69,18 +75,39 @@ const awsConfig = await getAwsConfigFromOptionsOrFile({
 });
 
 const alias = await getAccountAlias(awsConfig);
+const orgCosts = await getOrgCosts(awsConfig);
 
-const costs = await getTotalCosts(awsConfig);
-
-if (options.json) {
-  printJson(alias, costs, options.summary);
-} else if (options.text) {
-  printPlainText(alias, costs, options.summary);
-} else {
-  printFancy(alias, costs, options.summary);
+let accountNames: AccountNameMap = {};
+try {
+  accountNames = await getAccountNames(awsConfig);
+} catch {
+  // No org permissions — account IDs will display as-is
 }
 
-// Send a notification to slack if the token and channel are provided
+const priceFloorCents = parseInt(options.priceFloorCents, 10);
+
+const filteredOrgTotals = filterByPriceFloor(orgCosts.orgTotals, priceFloorCents);
+const filteredCostsByAccount: Record<string, TotalCostsWithDrilldown> = {};
+for (const [accountId, costs] of Object.entries(orgCosts.costsByAccount)) {
+  filteredCostsByAccount[accountId] = filterByPriceFloor(costs, priceFloorCents);
+}
+
+if (options.json) {
+  printJson(alias, filteredOrgTotals, options.summary, filteredCostsByAccount, accountNames);
+} else if (options.text) {
+  printPlainText(alias, filteredOrgTotals, options.summary, filteredCostsByAccount, accountNames);
+} else {
+  printFancy(alias, filteredOrgTotals, options.summary, filteredCostsByAccount, accountNames);
+}
+
 if (options.slackToken && options.slackChannel) {
-  await notifySlack(alias, costs, options.summary, options.slackToken, options.slackChannel);
+  await notifySlack(
+    alias,
+    filteredOrgTotals,
+    options.summary,
+    options.slackToken,
+    options.slackChannel,
+    filteredCostsByAccount,
+    accountNames
+  );
 }

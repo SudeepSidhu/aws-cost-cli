@@ -10,8 +10,21 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "fmt": "prettier --write \"**/*.{json,js,ts,html,md,yml,sh}\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "pre-commit": "lint-staged && npm run typecheck",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,js,html,md,yml,sh}": [
+      "prettier --write"
+    ]
   },
   "keywords": [
     "aws",
@@ -38,6 +51,7 @@
   "dependencies": {
     "@aws-sdk/client-cost-explorer": "^3.1002.0",
     "@aws-sdk/client-iam": "^3.1002.0",
+    "@aws-sdk/client-organizations": "^3.1002.0",
     "@aws-sdk/client-sts": "^3.1002.0",
     "@smithy/shared-ini-file-loader": "^4.4.6",
     "chalk": "^5.6.2",
@@ -48,7 +62,15 @@
     "tsx": "^4.21.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@trivago/prettier-plugin-sort-imports": "^6.0.2",
     "@types/node": "^25.3.3",
-    "typescript": "^5.9.3"
+    "eslint": "^10.0.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.3.2",
+    "prettier": "^3.8.1",
+    "prettier-plugin-sh": "^0.18.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
   }
 }
