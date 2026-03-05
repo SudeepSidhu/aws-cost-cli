@@ -1,4 +1,4 @@
-import AWS from 'aws-sdk';
+import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
 import dayjs from 'dayjs';
 import { AWSConfig } from './config';
 import { showSpinner } from './logger';
@@ -12,13 +12,12 @@ export type RawCostByService = {
 export async function getRawCostByService(awsConfig: AWSConfig): Promise<RawCostByService> {
   showSpinner('Getting pricing data');
 
-  const costExplorer = new AWS.CostExplorer(awsConfig);
+  const costExplorer = new CostExplorerClient(awsConfig);
   const endDate = dayjs().subtract(1, 'day');
   const startDate = endDate.subtract(65, 'day');
 
-  // Get the cost and usage data for the specified account
-  const pricingData = await costExplorer
-    .getCostAndUsage({
+  const pricingData = await costExplorer.send(
+    new GetCostAndUsageCommand({
       TimePeriod: {
         Start: startDate.format('YYYY-MM-DD'),
         End: endDate.format('YYYY-MM-DD'),
@@ -40,7 +39,7 @@ export async function getRawCostByService(awsConfig: AWSConfig): Promise<RawCost
         },
       ],
     })
-    .promise();
+  );
 
   const costByService = {};
 
