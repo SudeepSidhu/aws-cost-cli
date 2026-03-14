@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 
 import { getAccountAlias } from './account';
 import { getAwsConfigFromOptionsOrFile } from './config';
-import { TotalCostsWithDrilldown, filterByPriceFloor, getOrgCosts } from './cost';
+import { AwsForecast, TotalCostsWithDrilldown, filterByPriceFloor, getAwsForecast, getOrgCosts } from './cost';
 import { AccountNameMap, getAccountNames } from './organizations';
 import { printFancy } from './printers/fancy';
 import { printJson } from './printers/json';
@@ -77,6 +77,9 @@ const awsConfig = await getAwsConfigFromOptionsOrFile({
 const alias = await getAccountAlias(awsConfig);
 const orgCosts = await getOrgCosts(awsConfig);
 
+// Fetch AWS forecast (separate API call, may fail gracefully)
+const awsForecast: AwsForecast = await getAwsForecast(awsConfig);
+
 let accountNames: AccountNameMap = {};
 try {
   accountNames = await getAccountNames(awsConfig);
@@ -93,11 +96,38 @@ for (const [accountId, costs] of Object.entries(orgCosts.costsByAccount)) {
 }
 
 if (options.json) {
-  printJson(alias, filteredOrgTotals, options.summary, filteredCostsByAccount, accountNames);
+  printJson(
+    alias,
+    filteredOrgTotals,
+    options.summary,
+    filteredCostsByAccount,
+    accountNames,
+    orgCosts.orgProjections,
+    orgCosts.projectionsByAccount,
+    awsForecast
+  );
 } else if (options.text) {
-  printPlainText(alias, filteredOrgTotals, options.summary, filteredCostsByAccount, accountNames);
+  printPlainText(
+    alias,
+    filteredOrgTotals,
+    options.summary,
+    filteredCostsByAccount,
+    accountNames,
+    orgCosts.orgProjections,
+    orgCosts.projectionsByAccount,
+    awsForecast
+  );
 } else {
-  printFancy(alias, filteredOrgTotals, options.summary, filteredCostsByAccount, accountNames);
+  printFancy(
+    alias,
+    filteredOrgTotals,
+    options.summary,
+    filteredCostsByAccount,
+    accountNames,
+    orgCosts.orgProjections,
+    orgCosts.projectionsByAccount,
+    awsForecast
+  );
 }
 
 if (options.slackToken && options.slackChannel) {
@@ -108,6 +138,9 @@ if (options.slackToken && options.slackChannel) {
     options.slackToken,
     options.slackChannel,
     filteredCostsByAccount,
-    accountNames
+    accountNames,
+    orgCosts.orgProjections,
+    orgCosts.projectionsByAccount,
+    awsForecast
   );
 }

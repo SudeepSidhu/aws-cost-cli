@@ -1,6 +1,7 @@
 import chalk from 'chalk';
+import dayjs from 'dayjs';
 
-import { CostPeriodsByKey, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
+import { AwsForecast, CostPeriodsByKey, Mover, ProjectionData, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
 import { hideSpinner } from '../logger';
 import { AccountNameMap } from '../organizations';
 
@@ -11,10 +12,83 @@ function printSummary(label: string, totalCosts: TotalCostsWithDrilldown['totals
   console.log(`${label.padStart(padWidth + 1)} `);
   console.log('');
   console.log(`${'Last Month'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.lastMonth.toFixed(2)}`)}`);
-  console.log(`${'This Month'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.thisMonth.toFixed(2)}`)}`);
+  console.log(
+    `${'This Month'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.thisMonth.toFixed(2)}`)}  ${chalk.dim(`(day ${dayjs().date()} of ${dayjs().daysInMonth()})`)}`
+  );
   console.log(`${'Last 7 days'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.last7Days.toFixed(2)}`)}`);
   console.log(`${chalk.bold('Yesterday'.padStart(padWidth))}: ${chalk.bold.yellowBright(`$${totalCosts.yesterday.toFixed(2)}`)}`);
   console.log(`${'Today'.padStart(padWidth)}: ${chalk.yellow(`$${totalCosts.today.toFixed(2)}`)}`);
+  console.log('');
+}
+
+function formatProjection(value: number | null): string {
+  if (value === null) return chalk.dim('N/A');
+  return `$${value.toFixed(2)}`;
+}
+
+function formatChange(changeDollar: number, changePercent: number | null, isNew: boolean, isGone: boolean): string {
+  if (isNew) return chalk.bold.green('NEW');
+  if (isGone) return chalk.bold.red('DISCONTINUED');
+
+  const sign = changeDollar >= 0 ? '+' : '';
+  const dollarStr = `${sign}$${changeDollar.toFixed(2)}`;
+  const pctStr = changePercent !== null ? ` (${sign}${changePercent.toFixed(1)}%)` : '';
+  const color = changeDollar >= 0 ? chalk.red : chalk.green;
+  return color(`${dollarStr}${pctStr}`);
+}
+
+function printProjections(projections: ProjectionData, lastMonth: number, thisMonth: number, awsForecast: AwsForecast, padWidth: number) {
+  console.log(chalk.bold.white('  Month-End Projections'));
+  console.log('');
+  console.log(`${'At current rate'.padStart(padWidth)}: ${chalk.magenta(formatProjection(projections.totals.mtdRate))}`);
+  console.log(`${"At last month's pace".padStart(padWidth)}: ${chalk.magenta(formatProjection(projections.totals.lastMonthRelative))}`);
+
+  if (awsForecast) {
+    // AWS forecast returns remaining cost; add this month's actual spend
+    const awsTotal = thisMonth + awsForecast.projected;
+    let ciStr = '';
+    if (awsForecast.ciLow !== null && awsForecast.ciHigh !== null) {
+      const awsCiLow = thisMonth + awsForecast.ciLow;
+      const awsCiHigh = thisMonth + awsForecast.ciHigh;
+      ciStr = `  ${chalk.dim(`($${awsCiLow.toFixed(2)} - $${awsCiHigh.toFixed(2)})`)}`;
+    }
+    console.log(`${'AWS Forecast'.padStart(padWidth)}: ${chalk.magenta(`$${awsTotal.toFixed(2)}`)}${ciStr}`);
+  } else {
+    console.log(`${'AWS Forecast'.padStart(padWidth)}: ${chalk.dim('unavailable')}`);
+  }
+
+  // vs Last Month comparison using the pattern-based projection (or MTD fallback)
+  const projected = projections.totals.lastMonthRelative ?? projections.totals.mtdRate;
+  if (lastMonth > 0) {
+    const changePct = ((projected - lastMonth) / lastMonth) * 100;
+    const sign = changePct >= 0 ? '+' : '';
+    const color = changePct >= 0 ? chalk.red : chalk.green;
+    console.log(`${'vs Last Mo'.padStart(padWidth)}: ${color(`${sign}${changePct.toFixed(1)}%`)}  ${chalk.dim('(pattern-based)')}`);
+  }
+
+  console.log('');
+}
+
+function printMovers(movers: Mover[]) {
+  if (movers.length === 0) return;
+
+  console.log(chalk.bold.white('  Biggest Movers (projected vs last month)'));
+  console.log('');
+
+  for (const mover of movers) {
+    const arrow = mover.changeDollar >= 0 ? chalk.red('↑') : chalk.green('↓');
+    const change = formatChange(mover.changeDollar, mover.changePercent, mover.isNew, mover.isGone);
+    console.log(`  ${arrow} ${chalk.cyan(mover.name)}  ${change}`);
+
+    if (mover.innerMovers) {
+      for (const inner of mover.innerMovers) {
+        const innerArrow = inner.changeDollar >= 0 ? chalk.red('↑') : chalk.green('↓');
+        const innerChange = formatChange(inner.changeDollar, inner.changePercent, inner.isNew, inner.isGone);
+        console.log(`    └ ${innerArrow} ${chalk.dim.cyan(inner.name)}  ${innerChange}`);
+      }
+    }
+  }
+
   console.log('');
 }
 
@@ -86,7 +160,10 @@ export function printFancy(
   totals: TotalCostsWithDrilldown,
   isSummary: boolean = false,
   costsByAccount?: Record<string, TotalCostsWithDrilldown>,
-  accountNames?: AccountNameMap
+  accountNames?: AccountNameMap,
+  orgProjections?: ProjectionData,
+  projectionsByAccount?: Record<string, ProjectionData>,
+  awsForecast?: AwsForecast
 ) {
   hideSpinner();
 
@@ -95,6 +172,12 @@ export function printFancy(
 
   // Org-wide summary
   printSummary(`AWS Cost Report: ${chalk.bold.yellow(accountAlias)}`, totals.totals, maxServiceLength);
+
+  // Projections and movers (org-wide)
+  if (orgProjections) {
+    printProjections(orgProjections, totals.totals.lastMonth, totals.totals.thisMonth, awsForecast ?? null, maxServiceLength);
+    printMovers(orgProjections.movers);
+  }
 
   if (!isSummary) {
     printServiceTable(totals);
@@ -131,6 +214,14 @@ export function printFancy(
         console.log('');
         console.log(chalk.dim('─'.repeat(95)));
         printSummary(label, accountCosts.totals, maxServiceLength);
+
+        // Per-account projections and movers
+        const accountProj = projectionsByAccount?.[accountId];
+        if (accountProj) {
+          printProjections(accountProj, accountCosts.totals.lastMonth, accountCosts.totals.thisMonth, null, maxServiceLength);
+          printMovers(accountProj.movers);
+        }
+
         printServiceTable(accountCosts);
       }
     }

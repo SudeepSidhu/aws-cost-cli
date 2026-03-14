@@ -1,4 +1,6 @@
-import { TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
+import dayjs from 'dayjs';
+
+import { AwsForecast, Mover, ProjectionData, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
 import { AccountNameMap } from '../organizations';
 
 function formatServiceBreakdown(costs: TotalCostsWithDrilldown): string {
@@ -27,16 +29,75 @@ function formatServiceBreakdown(costs: TotalCostsWithDrilldown): string {
   return lines.join('\n');
 }
 
+function formatMoverChange(mover: Mover): string {
+  if (mover.isNew) return '*NEW*';
+  if (mover.isGone) return '*DISCONTINUED*';
+  const sign = mover.changeDollar >= 0 ? '+' : '';
+  const pct = mover.changePercent !== null ? ` (${sign}${mover.changePercent.toFixed(1)}%)` : '';
+  return `${sign}$${mover.changeDollar.toFixed(2)}${pct}`;
+}
+
+function formatProjectionsBlock(projections: ProjectionData, lastMonth: number, thisMonth: number, awsForecast: AwsForecast): string {
+  const lines: string[] = [];
+  lines.push(`> *Month-End Projections* (day ${dayjs().date()} of ${dayjs().daysInMonth()})`);
+  lines.push(`> At current rate: \`$${projections.totals.mtdRate.toFixed(2)}\``);
+
+  if (projections.totals.lastMonthRelative !== null) {
+    lines.push(`> At last month's pace: \`$${projections.totals.lastMonthRelative.toFixed(2)}\``);
+  }
+
+  if (awsForecast) {
+    const awsTotal = thisMonth + awsForecast.projected;
+    lines.push(`> AWS Forecast: \`$${awsTotal.toFixed(2)}\``);
+  }
+
+  const projected = projections.totals.lastMonthRelative ?? projections.totals.mtdRate;
+  if (lastMonth > 0) {
+    const changePct = ((projected - lastMonth) / lastMonth) * 100;
+    const sign = changePct >= 0 ? '+' : '';
+    lines.push(`> vs Last Month: \`${sign}${changePct.toFixed(1)}%\``);
+  }
+
+  return lines.join('\n');
+}
+
+function formatMoversBlock(movers: Mover[]): string {
+  if (movers.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('> *Biggest Movers*');
+
+  for (const mover of movers) {
+    const arrow = mover.changeDollar >= 0 ? '↑' : '↓';
+    lines.push(`> ${arrow} ${mover.name}: ${formatMoverChange(mover)}`);
+
+    if (mover.innerMovers) {
+      for (const inner of mover.innerMovers) {
+        const innerArrow = inner.changeDollar >= 0 ? '↑' : '↓';
+        lines.push(`>   └ ${innerArrow} ${inner.name}: ${formatMoverChange(inner)}`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
 type SlackBlock = { type: string; text?: { type: string; text: string } };
 
-function buildCostBlocks(label: string, costs: TotalCostsWithDrilldown, isSummary: boolean): SlackBlock[] {
+function buildCostBlocks(
+  label: string,
+  costs: TotalCostsWithDrilldown,
+  isSummary: boolean,
+  projections?: ProjectionData,
+  awsForecast?: AwsForecast
+): SlackBlock[] {
   const totals = costs.totals;
 
   const summary = `> *${label}*
 
 > *Summary*
 > Total Last Month: \`$${totals.lastMonth.toFixed(2)}\`
-> Total This Month: \`$${totals.thisMonth.toFixed(2)}\`
+> Total This Month: \`$${totals.thisMonth.toFixed(2)}\` (day ${dayjs().date()} of ${dayjs().daysInMonth()})
 > Total Last 7 Days: \`$${totals.last7Days.toFixed(2)}\`
 > Total Yesterday: \`$${totals.yesterday.toFixed(2)}\`
 > Total Today: \`$${totals.today.toFixed(2)}\`
@@ -48,6 +109,15 @@ ${formatServiceBreakdown(costs)}
 `;
 
   let message = summary;
+
+  if (projections) {
+    message += '\n' + formatProjectionsBlock(projections, totals.lastMonth, totals.thisMonth, awsForecast ?? null) + '\n';
+    const moversBlock = formatMoversBlock(projections.movers);
+    if (moversBlock) {
+      message += '\n' + moversBlock + '\n';
+    }
+  }
+
   if (!isSummary) {
     message += breakdown;
   }
@@ -67,12 +137,15 @@ export async function notifySlack(
   slackToken: string,
   slackChannel: string,
   costsByAccount?: Record<string, TotalCostsWithDrilldown>,
-  accountNames?: AccountNameMap
+  accountNames?: AccountNameMap,
+  orgProjections?: ProjectionData,
+  projectionsByAccount?: Record<string, ProjectionData>,
+  awsForecast?: AwsForecast
 ) {
   const blocks: SlackBlock[] = [];
 
   // Org-wide summary
-  blocks.push(...buildCostBlocks(`Account: ${accountAlias}`, costs, isSummary));
+  blocks.push(...buildCostBlocks(`Account: ${accountAlias}`, costs, isSummary, orgProjections, awsForecast));
 
   // Account summary table
   if (costsByAccount && Object.keys(costsByAccount).length > 0) {
@@ -97,8 +170,9 @@ export async function notifySlack(
       for (const accountId of sortedAccountIds) {
         const name = accountNames?.[accountId];
         const label = name ? `${name} (${accountId})` : accountId;
+        const accountProj = projectionsByAccount?.[accountId];
         blocks.push({ type: 'divider' });
-        blocks.push(...buildCostBlocks(label, costsByAccount[accountId], isSummary));
+        blocks.push(...buildCostBlocks(label, costsByAccount[accountId], isSummary, accountProj));
       }
     }
   }

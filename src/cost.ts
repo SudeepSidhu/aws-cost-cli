@@ -1,4 +1,4 @@
-import { CostExplorerClient, GetCostAndUsageCommand } from '@aws-sdk/client-cost-explorer';
+import { CostExplorerClient, GetCostAndUsageCommand, GetCostForecastCommand } from '@aws-sdk/client-cost-explorer';
 import dayjs from 'dayjs';
 
 import { AWSConfig } from './config';
@@ -37,9 +37,39 @@ export type TotalCostsWithDrilldown = TotalCosts & {
   drilldown: DrilldownData;
 };
 
+export type ProjectionMethods = {
+  mtdRate: number;
+  lastMonthRelative: number | null;
+};
+
+export type AwsForecast = {
+  projected: number; // forecasted remaining cost for the month
+  ciLow: number | null; // 80% CI lower bound (remaining), null if unavailable
+  ciHigh: number | null; // 80% CI upper bound (remaining), null if unavailable
+} | null;
+
+export type Mover = {
+  name: string;
+  lastMonth: number;
+  projected: number;
+  changePercent: number | null; // null for new services (was ~$0)
+  changeDollar: number;
+  isNew: boolean;
+  isGone: boolean;
+  innerMovers?: Mover[];
+};
+
+export type ProjectionData = {
+  totals: ProjectionMethods;
+  byService: Record<string, ProjectionMethods>;
+  movers: Mover[];
+};
+
 export type OrgCosts = {
   orgTotals: TotalCostsWithDrilldown;
   costsByAccount: Record<string, TotalCostsWithDrilldown>;
+  orgProjections: ProjectionData;
+  projectionsByAccount: Record<string, ProjectionData>;
 };
 
 // Services that get automatic USAGE_TYPE drilldown
@@ -167,6 +197,206 @@ export function calculateServiceTotals(rawCostByService: RawCostByService): Tota
   };
 }
 
+/**
+ * Computes MTD-rate and last-month-relative projections from raw daily cost data.
+ */
+function computeProjections(
+  raw: RawCostByService,
+  totals: TotalCosts
+): { totals: ProjectionMethods; byKey: Record<string, ProjectionMethods> } {
+  const dayOfMonth = dayjs().date();
+  const daysInMonth = dayjs().daysInMonth();
+  const startOfLastMonth = dayjs().subtract(1, 'month').startOf('month');
+  const mtdMultiplier = daysInMonth / Math.max(dayOfMonth, 1);
+
+  // Sum last month's costs through the same day-of-month as today (partial month)
+  const lastMonthPartialByKey: Record<string, number> = {};
+  let lastMonthPartialTotal = 0;
+
+  for (const [key, dates] of Object.entries(raw)) {
+    lastMonthPartialByKey[key] = 0;
+    for (const [dateStr, cost] of Object.entries(dates)) {
+      const dateObj = dayjs(dateStr);
+      // Same "last month" check as calculateServiceTotals
+      if (dateObj.isSame(startOfLastMonth, 'month')) {
+        // Stored date is TimePeriod.End (actual cost day + 1). Derive actual day.
+        const actualDay = dateObj.subtract(1, 'day');
+        if (actualDay.date() <= dayOfMonth) {
+          lastMonthPartialByKey[key] += cost;
+          lastMonthPartialTotal += cost;
+        }
+      }
+    }
+  }
+
+  // Total projections
+  const mtdRateTotal = totals.totals.thisMonth * mtdMultiplier;
+  const lastMonthRelativeTotal =
+    lastMonthPartialTotal >= 1 ? totals.totals.lastMonth * (totals.totals.thisMonth / lastMonthPartialTotal) : null;
+
+  // Per-key projections
+  const byKey: Record<string, ProjectionMethods> = {};
+  for (const key of Object.keys(totals.totalsByService.lastMonth)) {
+    const thisMonth = totals.totalsByService.thisMonth[key] || 0;
+    const lastMonth = totals.totalsByService.lastMonth[key] || 0;
+    const partial = lastMonthPartialByKey[key] || 0;
+
+    byKey[key] = {
+      mtdRate: thisMonth * mtdMultiplier,
+      lastMonthRelative: partial >= 1 ? lastMonth * (thisMonth / partial) : null,
+    };
+  }
+
+  return {
+    totals: { mtdRate: mtdRateTotal, lastMonthRelative: lastMonthRelativeTotal },
+    byKey,
+  };
+}
+
+const MOVER_CHANGE_PERCENT = 0.2; // 20%
+const MOVER_CHANGE_DOLLARS = 5; // $5
+
+/**
+ * Identifies services (or usage types) with the biggest projected change vs last month.
+ * Recursive: for drilldown services, also identifies inner usage-type movers.
+ */
+function identifyMovers(
+  projections: Record<string, ProjectionMethods>,
+  totalsByKey: CostPeriodsByKey,
+  drilldownProjections?: Record<string, Record<string, ProjectionMethods>>,
+  drilldownPeriods?: DrilldownData
+): Mover[] {
+  const movers: Mover[] = [];
+
+  const allKeys = new Set([...Object.keys(totalsByKey.lastMonth), ...Object.keys(totalsByKey.thisMonth)]);
+
+  for (const key of allKeys) {
+    const lastMonth = totalsByKey.lastMonth[key] || 0;
+    const proj = projections[key];
+    if (!proj) continue;
+
+    const projected = proj.lastMonthRelative ?? proj.mtdRate;
+    const changeDollar = projected - lastMonth;
+    const isNew = lastMonth < 0.01 && projected >= MOVER_CHANGE_DOLLARS;
+    const isGone = projected < 0.01 && lastMonth >= MOVER_CHANGE_DOLLARS;
+    const changePercent = lastMonth >= 0.01 ? changeDollar / lastMonth : null;
+
+    const passesThreshold =
+      isNew ||
+      isGone ||
+      (changePercent !== null && Math.abs(changePercent) >= MOVER_CHANGE_PERCENT && Math.abs(changeDollar) >= MOVER_CHANGE_DOLLARS);
+
+    if (!passesThreshold) continue;
+
+    const mover: Mover = {
+      name: key,
+      lastMonth,
+      projected,
+      changePercent: changePercent !== null ? changePercent * 100 : null,
+      changeDollar,
+      isNew,
+      isGone,
+    };
+
+    // Recurse into drilldown for inner movers
+    if (drilldownProjections?.[key] && drilldownPeriods?.[key]) {
+      const innerMovers = identifyMovers(drilldownProjections[key], drilldownPeriods[key]);
+      if (innerMovers.length > 0) {
+        mover.innerMovers = innerMovers;
+      }
+    }
+
+    movers.push(mover);
+  }
+
+  movers.sort((a, b) => Math.abs(b.changeDollar) - Math.abs(a.changeDollar));
+  return movers;
+}
+
+/**
+ * Builds drilldown data and computes per-usage-type projections in one pass.
+ */
+function buildDrilldownWithProjections(rawDrilldown: Record<string, RawCostByService>): {
+  drilldown: DrilldownData;
+  drilldownProjections: Record<string, Record<string, ProjectionMethods>>;
+} {
+  const drilldown: DrilldownData = {};
+  const drilldownProjections: Record<string, Record<string, ProjectionMethods>> = {};
+
+  for (const [service, rawByUsageType] of Object.entries(rawDrilldown)) {
+    const totals = calculateServiceTotals(rawByUsageType);
+    drilldown[service] = totals.totalsByService;
+    drilldownProjections[service] = computeProjections(rawByUsageType, totals).byKey;
+  }
+
+  return { drilldown, drilldownProjections };
+}
+
+/**
+ * Calls AWS GetCostForecast API for the remainder of the current month.
+ * Returns null on any failure (missing permissions, API unavailable, etc.).
+ */
+export async function getAwsForecast(awsConfig: AWSConfig): Promise<AwsForecast> {
+  try {
+    const costExplorer = new CostExplorerClient(awsConfig);
+
+    const tomorrow = dayjs().add(1, 'day').startOf('day');
+    const firstOfNextMonth = dayjs().add(1, 'month').startOf('month');
+
+    // Nothing to forecast if today is the last day of the month
+    if (!tomorrow.isBefore(firstOfNextMonth)) {
+      return null;
+    }
+
+    showSpinner('Getting AWS cost forecast');
+
+    const response = await costExplorer.send(
+      new GetCostForecastCommand({
+        TimePeriod: {
+          Start: tomorrow.format('YYYY-MM-DD'),
+          End: firstOfNextMonth.format('YYYY-MM-DD'),
+        },
+        Metric: 'UNBLENDED_COST',
+        Granularity: 'DAILY',
+        Filter: {
+          Not: {
+            Dimensions: {
+              Key: 'RECORD_TYPE',
+              Values: ['Credit', 'Refund', 'Upfront', 'Support'],
+            },
+          },
+        },
+      })
+    );
+
+    const forecasts = response.ForecastResultsByTime;
+    if (!forecasts || forecasts.length === 0) return null;
+
+    // Sum daily forecasts for the remaining month
+    let projected = 0;
+    let ciLow = 0;
+    let ciHigh = 0;
+    let hasBounds = false;
+
+    for (const day of forecasts) {
+      projected += parseFloat(day.MeanValue || '0');
+      if (day.PredictionIntervalLowerBound && day.PredictionIntervalUpperBound) {
+        hasBounds = true;
+        ciLow += parseFloat(day.PredictionIntervalLowerBound);
+        ciHigh += parseFloat(day.PredictionIntervalUpperBound);
+      }
+    }
+
+    return {
+      projected,
+      ciLow: hasBounds ? ciLow : null,
+      ciHigh: hasBounds ? ciHigh : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function getOrgCosts(awsConfig: AWSConfig): Promise<OrgCosts> {
   showSpinner('Getting pricing data');
 
@@ -231,12 +461,27 @@ export async function getOrgCosts(awsConfig: AWSConfig): Promise<OrgCosts> {
   // Fetch drilldown data for those services
   const rawDrilldownByAccount = servicesToDrill.length > 0 ? await fetchDrilldown(costExplorer, startDate, endDate, servicesToDrill) : {};
 
-  // Calculate per-account totals with drilldown
+  // Calculate per-account totals, drilldown, and projections
   const costsByAccount: Record<string, TotalCostsWithDrilldown> = {};
+  const projectionsByAccount: Record<string, ProjectionData> = {};
+
   for (const [accountId, rawCosts] of Object.entries(rawByAccount)) {
     const base = calculateServiceTotals(rawCosts);
-    const drilldown = rawDrilldownByAccount[accountId] ? buildDrilldown(rawDrilldownByAccount[accountId]) : {};
+    const rawDrill = rawDrilldownByAccount[accountId];
+    const { drilldown, drilldownProjections } = rawDrill
+      ? buildDrilldownWithProjections(rawDrill)
+      : { drilldown: {} as DrilldownData, drilldownProjections: {} as Record<string, Record<string, ProjectionMethods>> };
+
     costsByAccount[accountId] = { ...base, drilldown };
+
+    const serviceProjections = computeProjections(rawCosts, base);
+    const movers = identifyMovers(serviceProjections.byKey, base.totalsByService, drilldownProjections, drilldown);
+
+    projectionsByAccount[accountId] = {
+      totals: serviceProjections.totals,
+      byService: serviceProjections.byKey,
+      movers,
+    };
   }
 
   // Build aggregate raw data across all accounts for org totals
@@ -264,12 +509,24 @@ export async function getOrgCosts(awsConfig: AWSConfig): Promise<OrgCosts> {
     }
   }
 
+  const orgBase = calculateServiceTotals(orgRaw);
+  const { drilldown: orgDrilldown, drilldownProjections: orgDrilldownProjections } = buildDrilldownWithProjections(orgDrilldownRaw);
+
   const orgTotals: TotalCostsWithDrilldown = {
-    ...calculateServiceTotals(orgRaw),
-    drilldown: buildDrilldown(orgDrilldownRaw),
+    ...orgBase,
+    drilldown: orgDrilldown,
   };
 
-  return { orgTotals, costsByAccount };
+  const orgServiceProjections = computeProjections(orgRaw, orgBase);
+  const orgMovers = identifyMovers(orgServiceProjections.byKey, orgBase.totalsByService, orgDrilldownProjections, orgDrilldown);
+
+  const orgProjections: ProjectionData = {
+    totals: orgServiceProjections.totals,
+    byService: orgServiceProjections.byKey,
+    movers: orgMovers,
+  };
+
+  return { orgTotals, costsByAccount, orgProjections, projectionsByAccount };
 }
 
 async function fetchDrilldown(
@@ -339,14 +596,6 @@ async function fetchDrilldown(
   }
 
   return result;
-}
-
-function buildDrilldown(rawDrilldown: Record<string, RawCostByService>): DrilldownData {
-  const drilldown: DrilldownData = {};
-  for (const [service, rawByUsageType] of Object.entries(rawDrilldown)) {
-    drilldown[service] = calculateServiceTotals(rawByUsageType).totalsByService;
-  }
-  return drilldown;
 }
 
 export function filterByPriceFloor(costs: TotalCostsWithDrilldown, priceFloorCents: number): TotalCostsWithDrilldown {
