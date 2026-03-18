@@ -1,19 +1,24 @@
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 
-import { AwsForecast, Mover, ProjectionData, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
+import { AwsForecast, Mover, ProjectionData, TotalCostsWithDrilldown, getPeriodLabels, sortBySpend, spendScore } from '../cost';
 import { hideSpinner } from '../logger';
 import { AccountNameMap } from '../organizations';
 
+dayjs.extend(utc);
+
 function printSummaryBlock(label: string, costs: TotalCostsWithDrilldown) {
+  const labels = getPeriodLabels();
   console.log('');
   console.log(`Account: ${label}`);
   console.log('');
   console.log('Totals:');
-  console.log(`  Last Month: $${costs.totals.lastMonth.toFixed(2)}`);
-  console.log(`  This Month: $${costs.totals.thisMonth.toFixed(2)}  (day ${dayjs().date()} of ${dayjs().daysInMonth()})`);
-  console.log(`  Last 7 Days: $${costs.totals.last7Days.toFixed(2)}`);
-  console.log(`  Yesterday: $${costs.totals.yesterday.toFixed(2)}`);
-  console.log(`  Today: $${costs.totals.today.toFixed(2)}`);
+  console.log(`  ${labels.lastMonth}: $${costs.totals.lastMonth.toFixed(2)}`);
+  console.log(`  ${labels.thisMonth}: $${costs.totals.thisMonth.toFixed(2)}  (day ${dayjs.utc().date()} of ${dayjs.utc().daysInMonth()})`);
+  console.log(`  ${labels.last7Days}: $${costs.totals.last7Days.toFixed(2)}`);
+  console.log(`  ${labels.dayBeforeYesterday}: $${costs.totals.dayBeforeYesterday.toFixed(2)}`);
+  console.log(`  ${labels.yesterday}: $${costs.totals.yesterday.toFixed(2)}`);
+  console.log(`  ${labels.today}: $${costs.totals.today.toFixed(2)}`);
 }
 
 function formatProjection(value: number | null): string {
@@ -30,7 +35,7 @@ function formatMoverChange(mover: Mover): string {
 
 function printProjectionsBlock(projections: ProjectionData, lastMonth: number, thisMonth: number, awsForecast: AwsForecast) {
   console.log('');
-  console.log(`Month-End Projections (day ${dayjs().date()} of ${dayjs().daysInMonth()}):`);
+  console.log(`Month-End Projections (day ${dayjs.utc().date()} of ${dayjs.utc().daysInMonth()}):`);
   console.log(`  At current rate: ${formatProjection(projections.totals.mtdRate)}`);
   console.log(`  At last month's pace: ${formatProjection(projections.totals.lastMonthRelative)}`);
 
@@ -76,14 +81,8 @@ function printServiceBreakdown(costs: TotalCostsWithDrilldown) {
   const sortedServices = sortBySpend(costs.totalsByService);
   if (sortedServices.length === 0) return;
 
-  const periods = ['lastMonth', 'thisMonth', 'last7Days', 'yesterday', 'today'] as const;
-  const periodLabels = {
-    lastMonth: 'Last Month',
-    thisMonth: 'This Month',
-    last7Days: 'Last 7 Days',
-    yesterday: 'Yesterday',
-    today: 'Today',
-  };
+  const periods = ['lastMonth', 'thisMonth', 'last7Days', 'dayBeforeYesterday', 'yesterday', 'today'] as const;
+  const periodLabels = getPeriodLabels();
 
   console.log('');
   console.log('Totals by Service:');

@@ -1,23 +1,48 @@
 import chalk from 'chalk';
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 
-import { AwsForecast, CostPeriodsByKey, Mover, ProjectionData, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
+import {
+  AwsForecast,
+  CostPeriodsByKey,
+  Mover,
+  ProjectionData,
+  TotalCostsWithDrilldown,
+  getPeriodLabels,
+  sortBySpend,
+  spendScore,
+} from '../cost';
 import { hideSpinner } from '../logger';
 import { AccountNameMap } from '../organizations';
 
-const HEADER_PAD = 12;
+dayjs.extend(utc);
+
+function columnWidths() {
+  const labels = getPeriodLabels();
+  const PAD = 2;
+  return {
+    lastMonth: Math.max(labels.lastMonth.length + PAD, 12),
+    thisMonth: Math.max(labels.thisMonth.length + PAD, 12),
+    last7Days: Math.max(labels.last7Days.length + PAD, 12),
+    dayBeforeYesterday: Math.max(labels.dayBeforeYesterday.length + PAD, 12),
+    yesterday: Math.max(labels.yesterday.length + PAD, 12),
+    today: Math.max(labels.today.length + PAD, 12),
+  };
+}
 
 function printSummary(label: string, totalCosts: TotalCostsWithDrilldown['totals'], padWidth: number) {
+  const labels = getPeriodLabels();
   console.log('');
   console.log(`${label.padStart(padWidth + 1)} `);
   console.log('');
-  console.log(`${'Last Month'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.lastMonth.toFixed(2)}`)}`);
+  console.log(`${labels.lastMonth.padStart(padWidth)}: ${chalk.green(`$${totalCosts.lastMonth.toFixed(2)}`)}`);
   console.log(
-    `${'This Month'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.thisMonth.toFixed(2)}`)}  ${chalk.dim(`(day ${dayjs().date()} of ${dayjs().daysInMonth()})`)}`
+    `${labels.thisMonth.padStart(padWidth)}: ${chalk.green(`$${totalCosts.thisMonth.toFixed(2)}`)}  ${chalk.dim(`(day ${dayjs.utc().date()} of ${dayjs.utc().daysInMonth()})`)}`
   );
-  console.log(`${'Last 7 days'.padStart(padWidth)}: ${chalk.green(`$${totalCosts.last7Days.toFixed(2)}`)}`);
-  console.log(`${chalk.bold('Yesterday'.padStart(padWidth))}: ${chalk.bold.yellowBright(`$${totalCosts.yesterday.toFixed(2)}`)}`);
-  console.log(`${'Today'.padStart(padWidth)}: ${chalk.yellow(`$${totalCosts.today.toFixed(2)}`)}`);
+  console.log(`${labels.last7Days.padStart(padWidth)}: ${chalk.green(`$${totalCosts.last7Days.toFixed(2)}`)}`);
+  console.log(`${labels.dayBeforeYesterday.padStart(padWidth)}: ${chalk.green(`$${totalCosts.dayBeforeYesterday.toFixed(2)}`)}`);
+  console.log(`${chalk.bold(labels.yesterday.padStart(padWidth))}: ${chalk.bold.yellowBright(`$${totalCosts.yesterday.toFixed(2)}`)}`);
+  console.log(`${labels.today.padStart(padWidth)}: ${chalk.yellow(`$${totalCosts.today.toFixed(2)}`)}`);
   console.log('');
 }
 
@@ -93,26 +118,27 @@ function printMovers(movers: Mover[]) {
 }
 
 function printTableHeader(maxNameLength: number) {
-  const h = (s: string) => chalk.white(s.padEnd(HEADER_PAD));
+  const labels = getPeriodLabels();
+  const w = columnWidths();
   console.log(
-    `${chalk.white(''.padStart(maxNameLength))} ${h('Last Month')} ${h('This Month')} ${h('Last 7 Days')} ${chalk.bold.white('Yesterday'.padEnd(HEADER_PAD))} ${h('Today')}`
+    `${chalk.white(''.padStart(maxNameLength))} ${chalk.white(labels.lastMonth.padEnd(w.lastMonth))} ${chalk.white(labels.thisMonth.padEnd(w.thisMonth))} ${chalk.white(labels.last7Days.padEnd(w.last7Days))} ${chalk.white(labels.dayBeforeYesterday.padEnd(w.dayBeforeYesterday))} ${chalk.bold.white(labels.yesterday.padEnd(w.yesterday))} ${chalk.white(labels.today.padEnd(w.today))}`
   );
 }
 
 function printTableRow(name: string, maxNameLength: number, periods: TotalCostsWithDrilldown['totals'], nameColor = chalk.cyan) {
-  const g = (v: number) => chalk.green(`$${v.toFixed(2)}`.padEnd(HEADER_PAD));
+  const w = columnWidths();
   console.log(
-    `${nameColor(name.padStart(maxNameLength))} ${g(periods.lastMonth)} ${g(periods.thisMonth)} ${g(periods.last7Days)} ${chalk.bold.yellowBright(`$${periods.yesterday.toFixed(2)}`.padEnd(HEADER_PAD))} ${chalk.yellow(`$${periods.today.toFixed(2)}`.padEnd(HEADER_PAD))}`
+    `${nameColor(name.padStart(maxNameLength))} ${chalk.green(`$${periods.lastMonth.toFixed(2)}`.padEnd(w.lastMonth))} ${chalk.green(`$${periods.thisMonth.toFixed(2)}`.padEnd(w.thisMonth))} ${chalk.green(`$${periods.last7Days.toFixed(2)}`.padEnd(w.last7Days))} ${chalk.green(`$${periods.dayBeforeYesterday.toFixed(2)}`.padEnd(w.dayBeforeYesterday))} ${chalk.bold.yellowBright(`$${periods.yesterday.toFixed(2)}`.padEnd(w.yesterday))} ${chalk.yellow(`$${periods.today.toFixed(2)}`.padEnd(w.today))}`
   );
 }
 
 function printDrilldownRows(drilldown: CostPeriodsByKey, maxNameLength: number) {
+  const w = columnWidths();
   const sorted = sortBySpend(drilldown);
   for (const usageType of sorted) {
     const label = `  └ ${usageType}`;
-    const g = (v: number) => chalk.dim.green(`$${v.toFixed(2)}`.padEnd(HEADER_PAD));
     console.log(
-      `${chalk.dim.cyan(label.padStart(maxNameLength))} ${g(drilldown.lastMonth[usageType])} ${g(drilldown.thisMonth[usageType])} ${g(drilldown.last7Days[usageType])} ${chalk.dim.yellowBright(`$${drilldown.yesterday[usageType].toFixed(2)}`.padEnd(HEADER_PAD))} ${chalk.dim.yellow(`$${drilldown.today[usageType].toFixed(2)}`.padEnd(HEADER_PAD))}`
+      `${chalk.dim.cyan(label.padStart(maxNameLength))} ${chalk.dim.green(`$${drilldown.lastMonth[usageType].toFixed(2)}`.padEnd(w.lastMonth))} ${chalk.dim.green(`$${drilldown.thisMonth[usageType].toFixed(2)}`.padEnd(w.thisMonth))} ${chalk.dim.green(`$${drilldown.last7Days[usageType].toFixed(2)}`.padEnd(w.last7Days))} ${chalk.dim.green(`$${drilldown.dayBeforeYesterday[usageType].toFixed(2)}`.padEnd(w.dayBeforeYesterday))} ${chalk.dim.yellowBright(`$${drilldown.yesterday[usageType].toFixed(2)}`.padEnd(w.yesterday))} ${chalk.dim.yellow(`$${drilldown.today[usageType].toFixed(2)}`.padEnd(w.today))}`
     );
   }
 }
@@ -139,6 +165,7 @@ function printServiceTable(costs: TotalCostsWithDrilldown) {
       lastMonth: costs.totalsByService.lastMonth[service],
       thisMonth: costs.totalsByService.thisMonth[service],
       last7Days: costs.totalsByService.last7Days[service],
+      dayBeforeYesterday: costs.totalsByService.dayBeforeYesterday[service],
       yesterday: costs.totalsByService.yesterday[service],
       today: costs.totalsByService.today[service],
     });

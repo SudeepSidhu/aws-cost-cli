@@ -1,8 +1,11 @@
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 
 import { AwsForecast, ProjectionData, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
 import { hideSpinner } from '../logger';
 import { AccountNameMap } from '../organizations';
+
+dayjs.extend(utc);
 
 export function printJson(
   accountAlias: string,
@@ -32,8 +35,8 @@ export function printJson(
       : null;
 
     output.projections = {
-      dayOfMonth: dayjs().date(),
-      daysInMonth: dayjs().daysInMonth(),
+      dayOfMonth: dayjs.utc().date(),
+      daysInMonth: dayjs.utc().daysInMonth(),
       totals: orgProjections.totals,
       byService: orgProjections.byService,
       awsForecast: awsForecastTotal,
@@ -77,6 +80,7 @@ export function printJson(
           lastMonth: {},
           thisMonth: {},
           last7Days: {},
+          dayBeforeYesterday: {},
           yesterday: {},
           today: {},
         };
@@ -84,6 +88,7 @@ export function printJson(
           sorted.lastMonth[s] = costs.totalsByService.lastMonth[s];
           sorted.thisMonth[s] = costs.totalsByService.thisMonth[s];
           sorted.last7Days[s] = costs.totalsByService.last7Days[s];
+          sorted.dayBeforeYesterday[s] = costs.totalsByService.dayBeforeYesterday[s];
           sorted.yesterday[s] = costs.totalsByService.yesterday[s];
           sorted.today[s] = costs.totalsByService.today[s];
         }

@@ -1,9 +1,13 @@
 import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
 
-import { AwsForecast, Mover, ProjectionData, TotalCostsWithDrilldown, sortBySpend, spendScore } from '../cost';
+import { AwsForecast, Mover, ProjectionData, TotalCostsWithDrilldown, getPeriodLabels, sortBySpend, spendScore } from '../cost';
 import { AccountNameMap } from '../organizations';
 
+dayjs.extend(utc);
+
 function formatServiceBreakdown(costs: TotalCostsWithDrilldown): string {
+  const labels = getPeriodLabels();
   const sortedServices = sortBySpend(costs.totalsByService).filter(
     (service) => costs.totalsByService.yesterday[service] > 0 || costs.totalsByService.today[service] > 0
   );
@@ -11,7 +15,7 @@ function formatServiceBreakdown(costs: TotalCostsWithDrilldown): string {
   const lines: string[] = [];
   for (const service of sortedServices) {
     lines.push(
-      `> ${service}: Yesterday \`$${costs.totalsByService.yesterday[service].toFixed(2)}\` | Today \`$${costs.totalsByService.today[service].toFixed(2)}\``
+      `> ${service}: ${labels.yesterday} \`$${costs.totalsByService.yesterday[service].toFixed(2)}\` | ${labels.today} \`$${costs.totalsByService.today[service].toFixed(2)}\``
     );
 
     if (costs.drilldown[service]) {
@@ -20,7 +24,7 @@ function formatServiceBreakdown(costs: TotalCostsWithDrilldown): string {
         const yest = costs.drilldown[service].yesterday[ut];
         const tod = costs.drilldown[service].today[ut];
         if (yest > 0 || tod > 0) {
-          lines.push(`>   └ ${ut}: Yesterday \`$${yest.toFixed(2)}\` | Today \`$${tod.toFixed(2)}\``);
+          lines.push(`>   └ ${ut}: ${labels.yesterday} \`$${yest.toFixed(2)}\` | ${labels.today} \`$${tod.toFixed(2)}\``);
         }
       }
     }
@@ -39,7 +43,7 @@ function formatMoverChange(mover: Mover): string {
 
 function formatProjectionsBlock(projections: ProjectionData, lastMonth: number, thisMonth: number, awsForecast: AwsForecast): string {
   const lines: string[] = [];
-  lines.push(`> *Month-End Projections* (day ${dayjs().date()} of ${dayjs().daysInMonth()})`);
+  lines.push(`> *Month-End Projections* (day ${dayjs.utc().date()} of ${dayjs.utc().daysInMonth()})`);
   lines.push(`> At current rate: \`$${projections.totals.mtdRate.toFixed(2)}\``);
 
   if (projections.totals.lastMonthRelative !== null) {
@@ -92,15 +96,17 @@ function buildCostBlocks(
   awsForecast?: AwsForecast
 ): SlackBlock[] {
   const totals = costs.totals;
+  const labels = getPeriodLabels();
 
   const summary = `> *${label}*
 
 > *Summary*
-> Total Last Month: \`$${totals.lastMonth.toFixed(2)}\`
-> Total This Month: \`$${totals.thisMonth.toFixed(2)}\` (day ${dayjs().date()} of ${dayjs().daysInMonth()})
-> Total Last 7 Days: \`$${totals.last7Days.toFixed(2)}\`
-> Total Yesterday: \`$${totals.yesterday.toFixed(2)}\`
-> Total Today: \`$${totals.today.toFixed(2)}\`
+> Total ${labels.lastMonth}: \`$${totals.lastMonth.toFixed(2)}\`
+> Total ${labels.thisMonth}: \`$${totals.thisMonth.toFixed(2)}\` (day ${dayjs.utc().date()} of ${dayjs.utc().daysInMonth()})
+> Total ${labels.last7Days}: \`$${totals.last7Days.toFixed(2)}\`
+> Total ${labels.dayBeforeYesterday}: \`$${totals.dayBeforeYesterday.toFixed(2)}\`
+> Total ${labels.yesterday}: \`$${totals.yesterday.toFixed(2)}\`
+> Total ${labels.today}: \`$${totals.today.toFixed(2)}\`
 `;
 
   const breakdown = `
